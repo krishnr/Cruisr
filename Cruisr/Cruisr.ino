@@ -79,53 +79,57 @@ void Stop_Motor()
   Motor2->setSpeed(0);
 }
 
+volatile int counter = 0;
+
 // Set Motor Function
 void Set_Motor(int Motor_Val)
-{
+{ 
   if(Motor_Val > 255)                 // Limit Controller_Output to 0 - 255
     Motor_Val = 255;
-  if (Motor_Val < 0)
+  if (Motor_Val < 50)
     Motor_Val = 0;
+    
   Motor1->setSpeed(Motor_Val);
   Motor2->setSpeed(Motor_Val);
+  Motor1->run(FORWARD); 
+  Motor2->run(BACKWARD);
+
+//  Motor1->run(RELEASE);
+//  Motor2->run(RELEASE);
 }
 
 // Closed Loop Step Function with PID Controller
 // Note: it is assumed that every Controller has a Proportional term
 void CLStep(float Error)
 {           
-  // Calculate new error value 
-  Kp_Output = Kp*(float)Error;                        // Calculate Proportional Output 
-  Controller_Output = Kp_Output;                      // Set Controller Output to Proportional Output
-  
-  if(Ki > 0)
-  {  
-    Integral += float(Error)*PeriodinSeconds;         // Calculate Integral error 
-    Ki_Output = Ki*Integral;                          // Calculate Integral Output 
-    Controller_Output += Ki_Output;                   // Add Integral Output to Controller Output 
-  }
-  if(Kd > 0)
-  {
-    Kd_Output = (float(Error-Old_Error))*KdxFreq;     // Calculate Derivative Output
-    Controller_Output += Kd_Output;                   // Add Derivative Output to Controller Output
+  //Controller_Output = Controller_Output + Error * -200.0 + (Error - Old_Error) * 20.0;
+
+  if (abs(Error) > 0.3) {
+    Controller_Output = MS_To_Motor(Lead_Velocity_MS) + Error * -40;
+  } else {
+    Controller_Output = MS_To_Motor(Lead_Velocity_MS);
   }
 
-  if(Controller_Output < 0) {
+  if (Controller_Output < 0) {
     Controller_Output = 0;
-  }
-  if (Controller_Output > 255) {
+  } else if (Controller_Output > 255) {
     Controller_Output = 255;
-  }
- 
-  Old_Error = Error;                                  // Save old error value
-  Controller_Output = Controller_Old * 0.9 + Controller_Output * 0.1;
+  } 
 
-  if (Controller_Output - Controller_Old > 1) {
-    Controller_Output = Controller_Old + 1;
-  } else if (Controller_Output - Controller_Old < -1) {
-    Controller_Output = Controller_Old - 1;
+  Controller_Output = Controller_Old * 0.8 + Controller_Output * 0.2;
+
+  if (MS_To_Motor(Lead_Velocity_MS) < 20 && Error < 0 && Error > -0.5) {
+    Controller_Output = 70;
   }
+
+  //if ((Controller_Output - Controller_Old) > 5) {
+    //Controller_Output = Controller_Old + 5;
+  //} else if ((Controller_Output - Controller_Old) < -5) {
+    //Controller_Output = Controller_Old - 5;
+  //}
+  
   Controller_Old = Controller_Output;
+  Old_Error = Error;
 } 
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -199,13 +203,15 @@ void loop()
   Freq = 1/PeriodinSeconds;             // Calculate Control Loop Frequency in Hz
   KdxFreq = Kd*Freq;                    // Combined gain of Kd*Freq 
   
-  MsTimer2::start();             // Start timer  
+  //MsTimer2::start(); // Start timer
   
   while(true)     
   { 
     
     while(true)            // Wait for next Timer iteration`      
     {  
+      Timer_ISR();
+      delay(2);
     }
     
     Timer_Go = 0;                   // Reset Timer flag
@@ -241,15 +247,23 @@ long read_sensor() {
 }
 
 volatile float Old_Velocity_MS = 0;
+volatile float Old_Duration = 0;
 
 // Timer Interrupt Service Routine trigger by MsTimer2 function
 void Timer_ISR()
 { 
-  Duration = read_sensor();
-  Current_Distance_M = microsecondsToMeters(Duration); // TODO: Smooth this out over several measurements
+  Duration = Old_Duration * 0.8 + read_sensor() * 0.2;
 
-  Current_Velocity_MS = Motor_To_MS(int(Controller_Output));     // Read in current encoder position
-  Lead_Velocity_MS = Current_Velocity_MS + (Current_Distance_M - Old_Distance_M) / ((float)Period / 1000.0);
+  if (Duration - Old_Duration > 200) {
+    Duration = Old_Duration + 200;
+  } else if (Duration - Old_Duration < -200) {
+    Duration = Old_Duration - 200;
+  }
+  
+  Old_Duration = Duration;
+  Current_Distance_M = microsecondsToMeters(Duration); // TODO: Smooth this out over several measurements
+  
+  Lead_Velocity_MS = (Current_Distance_M - Old_Distance_M) / ((float)Period / 1000.0);
   Lead_Velocity_MS = Old_Velocity_MS * 0.99 + Lead_Velocity_MS * 0.01;
 
   if (abs(Lead_Velocity_MS - Old_Velocity_MS) > 0.2) {
@@ -260,23 +274,27 @@ void Timer_ISR()
 
   Current_Distance_M = Old_Distance_M * 0.9 + Current_Distance_M * 0.1;
 
-  if (abs(Current_Distance_M - Old_Distance_M) > 0.2) {
-    Lead_Velocity_MS = Old_Velocity_MS;
-  } 
+  if (Current_Distance_M - Old_Distance_M > 0.05) {
+    Current_Distance_M = Old_Distance_M + 0.05;
+  } else if (Current_Distance_M - Old_Distance_M < -0.05) {
+    Current_Distance_M = Old_Distance_M - 0.05;
+  }
   
   Old_Distance_M = Current_Distance_M;
 
-  Target_Distance_M = Lead_Velocity_MS * 2;
+  Target_Distance_M = Lead_Velocity_MS;
   
   // Closed Loop Step Mode with PID Controller
-  if (Target_Distance_M < 0.3) {
-    Target_Distance_M = 0.3;
-  }
+  Target_Distance_M = 0.5;
   
   CLStep(Target_Distance_M - Current_Distance_M); 
-  Serial.println(Controller_Output);        
+  Serial.println(Controller_Output);    
+
+  if (Current_Distance_M < 0.2) {
+    Controller_Output = 0;
+  }
   
-//  Set_Motor(int(Controller_Output));   // Call Move Motor Function 
+  Set_Motor(int(Controller_Output));   // Call Move Motor Function 
 //
     Old_Distance_M = Current_Distance_M;
 //  Timer_Go = 1;                      // Set Timer flag
@@ -294,7 +312,7 @@ int MS_To_Motor(float MS) {
   if (MS < 0) {
     return 0;
   } else {
-    return int(MS/0.0066 + 11.38);
+    return int(MS/0.0156 + 11.38);
   }
 }
 
