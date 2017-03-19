@@ -50,11 +50,13 @@ volatile float t = 0;                         // Time counter in seconds
 volatile float temp = 0;                      // temp variable used as intermediary for assigning Ramp Slope to Reference Input
 volatile signed long int Old_Error = 0;       // Previous position error
 volatile float Controller_Output = 0;         // Control loop Controller_Output
+volatile float Controller_Old = 0;
 volatile float Kp_Output = 0;                 // Proportional output
 volatile float Ki_Output = 0;                 // Integral output
 volatile float Integral = 0;                  // Integral error term for Integral Control 
 volatile float Kd_Output = 0;                 // Derivative output
 
+volatile float Old_Distance_M = 0;
 volatile float Current_Distance_M = 0;
 volatile float Duration = 0; 
 volatile float Current_Velocity_MS = 0;
@@ -62,12 +64,12 @@ volatile float Lead_Velocity_MS = 0;
 volatile float Target_Distance_M = 0;
 
 // Declare PID Gains 
-static float Kp = 0;                // Set Proportioanl Gain     
-static float Ki = 0;                // Set Integral Gain
-static float Kd = 0;                // Set Derivative Gain
+static float Kp = -46.9346806407297;                // Set Proportioanl Gain     
+static float Ki = -2.66438460805086;                // Set Integral Gain
+static float Kd = 17.4556171048772;                // Set Derivative Gain
 
 // Declare Control Loop Period in milli seconds (1-1000)
-static unsigned int Period = 10;
+static unsigned long Period = 10;
 
 // Stop Motor Function
 void Stop_Motor()
@@ -107,8 +109,23 @@ void CLStep(float Error)
     Kd_Output = (float(Error-Old_Error))*KdxFreq;     // Calculate Derivative Output
     Controller_Output += Kd_Output;                   // Add Derivative Output to Controller Output
   }
+
+  if(Controller_Output < 0) {
+    Controller_Output = 0;
+  }
+  if (Controller_Output > 255) {
+    Controller_Output = 255;
+  }
  
   Old_Error = Error;                                  // Save old error value
+  Controller_Output = Controller_Old * 0.9 + Controller_Output * 0.1;
+
+  if (Controller_Output - Controller_Old > 1) {
+    Controller_Output = Controller_Old + 1;
+  } else if (Controller_Output - Controller_Old < -1) {
+    Controller_Output = Controller_Old - 1;
+  }
+  Controller_Old = Controller_Output;
 } 
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -125,6 +142,7 @@ void CLStep(float Error)
 void setup() 
 {
   Serial.begin(9600);            // Setup serial output to 115,200 bps (bits per second)
+
      
   // Setup Data input pins from Encoder as inputs
   AFMS.begin();                     // Set pins 22-29 as inputs
@@ -138,7 +156,7 @@ void setup()
   Stop_Motor();
   
   // Setup Timer for Control Loop Frequency
-  MsTimer2::set(Period, Timer_ISR);   // Set Control Loop Frequency (Hz) to 1000/Period  
+  MsTimer2::set(Period, Timer_ISR);   // Set Control Loop Frequency (Hz) to 1000/Period   
 }
 
 void loop()
@@ -152,6 +170,8 @@ void loop()
   long duration, inches, cm, total_duration;
   int i;
 
+  // The PING))) is triggered by a HIGH pulse of 2 or more microseconds.
+  // Give a short LOW pulse beforehand to ensure a clean HIGH pulse:
   pinMode(pingPin, OUTPUT);
   digitalWrite(pingPin, LOW);
   delayMicroseconds(2);
@@ -159,7 +179,12 @@ void loop()
   delayMicroseconds(5);
   digitalWrite(pingPin, LOW);
 
+
+  // The same pin is used to read the signal from the PING))): a HIGH
+  // pulse whose duration is the time (in microseconds) from the sending
+  // of the ping to the reception of its echo off of an object.
   pinMode(pingPin, INPUT);
+  duration = pulseIn(pingPin, HIGH);
   
   //////////////////////////////////////////////////////////////////////////////////////
   // User Defined Local Variables and Global Variable Reset
@@ -174,57 +199,87 @@ void loop()
   Freq = 1/PeriodinSeconds;             // Calculate Control Loop Frequency in Hz
   KdxFreq = Kd*Freq;                    // Combined gain of Kd*Freq 
   
-  // Send out initial settings
-  Serial.println(Freq);                 // Send Freq value out serially
-     
   MsTimer2::start();             // Start timer  
   
   while(true)     
   { 
-    i = 0;
-    total_duration = 0;
-    duration = 0;
     
-    while(Timer_Go == 0)            // Wait for next Timer iteration`      
+    while(true)            // Wait for next Timer iteration`      
     {  
-      // Continuously read in and accumulate Motor Controller Current Feedback while waiting for timer
-      // in an attempt to reduce noise
-      total_duration += pulseIn(pingPin, HIGH);
-      i++;
     }
     
     Timer_Go = 0;                   // Reset Timer flag
 
-    if(i > 0)
-      duration = total_duration/i;   // Divide by number of samples to get average
-    
-    Serial.println(microsecondsToCentimeters(duration));    // Send Current_Feedback value out serially    
+    Serial.println("Current Distance: ");
+    Serial.println(Current_Distance_M);
+    Serial.println("Lead Velocity: ");
+    Serial.println(Lead_Velocity_MS);
+    Serial.println("Controller Output: ");
+    Serial.println(int(Controller_Output));   
   }
   
   Stop_Motor();                  // Stop motor  
   MsTimer2::stop();              // Stop timer
   delay(100);                    // Set delay of 100ms to debounce switch
-} 
+}
+
+long read_sensor() {
+  pinMode(pingPin, OUTPUT);
+  digitalWrite(pingPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(pingPin, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(pingPin, LOW);
+
+
+  // The same pin is used to read the signal from the PING))): a HIGH
+  // pulse whose duration is the time (in microseconds) from the sending
+  // of the ping to the reception of its echo off of an object.
+  pinMode(pingPin, INPUT);
+
+  return pulseIn(pingPin, HIGH); 
+}
+
+volatile float Old_Velocity_MS = 0;
 
 // Timer Interrupt Service Routine trigger by MsTimer2 function
-
 void Timer_ISR()
 { 
-  Duration = pulseIn(pingPin, HIGH);
-  Current_Distance_M = microsecondsToCentimeters(Duration) / 100; // TODO: Smooth this out over several measurements
-  
+  Duration = read_sensor();
+  Current_Distance_M = microsecondsToMeters(Duration); // TODO: Smooth this out over several measurements
+
   Current_Velocity_MS = Motor_To_MS(int(Controller_Output));     // Read in current encoder position
-  Lead_Velocity_MS = Current_Velocity_MS + (Current_Distance_M - Old_Distance_M) / ((float)Period / 1000); 
+  Lead_Velocity_MS = Current_Velocity_MS + (Current_Distance_M - Old_Distance_M) / ((float)Period / 1000.0);
+  Lead_Velocity_MS = Old_Velocity_MS * 0.99 + Lead_Velocity_MS * 0.01;
+
+  if (abs(Lead_Velocity_MS - Old_Velocity_MS) > 0.2) {
+    Lead_Velocity_MS = Old_Velocity_MS;
+  } 
+
+  Old_Velocity_MS = Lead_Velocity_MS;
+
+  Current_Distance_M = Old_Distance_M * 0.9 + Current_Distance_M * 0.1;
+
+  if (abs(Current_Distance_M - Old_Distance_M) > 0.2) {
+    Lead_Velocity_MS = Old_Velocity_MS;
+  } 
+  
+  Old_Distance_M = Current_Distance_M;
 
   Target_Distance_M = Lead_Velocity_MS * 2;
-
+  
   // Closed Loop Step Mode with PID Controller
-  CLStep(Target_Distance_M - Current_Distance_M);         
-    
-  Set_Motor(int(Controller_Output));   // Call Move Motor Function 
-
-  old_distance_m = current_distance_m;
-  Timer_Go = 1;                      // Set Timer flag
+  if (Target_Distance_M < 0.3) {
+    Target_Distance_M = 0.3;
+  }
+  
+  CLStep(Target_Distance_M - Current_Distance_M); 
+  Serial.println(Controller_Output);        
+  
+//  Set_Motor(int(Controller_Output));   // Call Move Motor Function 
+//
+    Old_Distance_M = Current_Distance_M;
+//  Timer_Go = 1;                      // Set Timer flag
 }
 
 float Motor_To_MS(int Motor_Val) {
@@ -239,7 +294,7 @@ int MS_To_Motor(float MS) {
   if (MS < 0) {
     return 0;
   } else {
-    return int(MS/0.0066 + 11.38)
+    return int(MS/0.0066 + 11.38);
   }
 }
 
@@ -263,5 +318,5 @@ float microsecondsToMeters(long microseconds) {
   // The speed of sound is 340 m/s or 29 microseconds per centimeter.
   // The ping travels out and back, so to find the distance of the
   // object we take half of the distance travelled.
-  return (float)microseconds / 100 / 29 / 2;
+  return (float)microseconds / 100.0 / 29.0 / 2.0;
 }

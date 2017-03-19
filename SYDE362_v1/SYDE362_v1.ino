@@ -42,7 +42,7 @@ void setup() {
 
 void loop() {
 
-/* Ultrasonic sensor code:
+//Ultrasonic sensor code:
 // establish variables for duration of the ping,
   // and the distance result in inches and centimeters:
   long duration, inches, cm;
@@ -76,7 +76,6 @@ void loop() {
   Serial.println();
 
   delay(100);
-*/
 
 /*
 int speed = 150;
